@@ -5,7 +5,7 @@ This on-prem service accepts one complete Discover Inspector request, paginates 
 ## Run
 
 1. Mount the customer NFS export share at `/mnt/security-exports`.
-2. Copy `.env.example` to `.env` and provide the Elastic API key, API token and Tines callback URL.
+2. Copy `.env.example` to `.env` and provide the Elastic API key, API token and completion webhook URL.
 3. Start the service:
 
    ```sh
@@ -38,11 +38,15 @@ The job stops at the next safe Elasticsearch page checkpoint, its PIT is closed,
 and already committed CSV parts remain available for operator cleanup. A queued
 job can be cancelled with the same command before it starts.
 
-The same exporter process sends the completion callback to Tines. Failed
-callbacks are retried from the completed manifest every
+The same exporter process sends terminal job metadata to the vendor-neutral
+`COMPLETION_WEBHOOK_URL`. This can be a Tines Webhook Action in the same story
+that submitted the export. Failed webhook deliveries are retried from the completed manifest every
 `CALLBACK_RETRY_SECONDS` until Tines accepts them. A delivery marker prevents
 duplicate completion emails after container restarts; no callback sidecar is
 required.
+
+For backwards compatibility, `TINES_CALLBACK_URL` is still accepted when
+`COMPLETION_WEBHOOK_URL` is not set.
 
 `export_name` is optional. When supplied, it is sanitized and combined with the job's random suffix to produce a readable, collision-safe ZIP name. Every CSV part begins with a UTF-8 byte-order mark for reliable Unicode handling in Windows Excel.
 

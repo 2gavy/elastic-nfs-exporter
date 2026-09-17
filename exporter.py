@@ -250,7 +250,7 @@ class ExportWorker:
     def __init__(self) -> None:
         self.export_dir = Path(env("NFS_EXPORT_DIR", "/exports"))
         self.export_dir.mkdir(parents=True, exist_ok=True)
-        self.callback_url = env("TINES_CALLBACK_URL")
+        self.callback_url = env("COMPLETION_WEBHOOK_URL", env("TINES_CALLBACK_URL"))
         self.download_base_url = env("DOWNLOAD_BASE_URL").rstrip("/")
         self.nfs_display_path = env("NFS_DISPLAY_PATH", str(self.export_dir))
         self.callback_lock = threading.Lock()
