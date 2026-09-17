@@ -33,6 +33,10 @@ SAFE_EXPORT_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 UTF8_BOM = b"\xef\xbb\xbf"
 
 
+class ExportCancelled(Exception):
+    """Raised internally when an operator cancels an export."""
+
+
 def env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
@@ -250,6 +254,7 @@ class ExportWorker:
         self.download_base_url = env("DOWNLOAD_BASE_URL").rstrip("/")
         self.nfs_display_path = env("NFS_DISPLAY_PATH", str(self.export_dir))
         self.callback_lock = threading.Lock()
+        self.cancel_requests: set[str] = set()
         self.jobs: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=int(env("MAX_QUEUED_JOBS", "20")))
         self.status: dict[str, dict[str, Any]] = {}
         self._restore_jobs()
@@ -322,11 +327,60 @@ class ExportWorker:
         )
         return self.status[job_id]
 
+    def cancel(self, job_id: str) -> tuple[HTTPStatus, dict[str, Any]]:
+        current = self.status.get(job_id)
+        if not current:
+            return HTTPStatus.NOT_FOUND, {"error": "job not found", "job_id": job_id}
+        status = str(current.get("status") or "")
+        if status in {"complete", "failed", "cancelled"}:
+            return HTTPStatus.CONFLICT, {
+                "error": f"job is already {status}",
+                "job_id": job_id,
+                "status": status,
+            }
+        updated = {
+            **current,
+            "status": "cancelling",
+            "cancel_requested_at": utc_now(),
+            "message": "Cancellation requested; the export will stop at the next safe page checkpoint.",
+        }
+        self.cancel_requests.add(job_id)
+        self.status[job_id] = updated
+        atomic_json(self.export_dir / f"{job_id}.json", updated)
+        LOG.info("CANCEL REQUESTED job_id=%s", job_id)
+        return HTTPStatus.ACCEPTED, {
+            "job_id": job_id,
+            "status": "cancelling",
+            "message": updated["message"],
+        }
+
     def _run(self) -> None:
         while True:
             job = self.jobs.get()
             try:
+                if job["job_id"] in self.cancel_requests or (
+                    self.status.get(job["job_id"]) or {}
+                ).get("status") in {"cancelling", "cancelled"}:
+                    raise ExportCancelled()
                 self._export(job)
+            except ExportCancelled:
+                previous = self.status.get(job["job_id"], {})
+                result = {
+                    **previous,
+                    "job_id": job["job_id"],
+                    "status": "cancelled",
+                    "cancelled_at": utc_now(),
+                    "message": "Export cancelled by operator; committed CSV parts were preserved.",
+                }
+                self.status[job["job_id"]] = result
+                atomic_json(self.export_dir / f"{job['job_id']}.json", result)
+                self.cancel_requests.discard(job["job_id"])
+                LOG.info(
+                    "CANCELLED job_id=%s records=%s pages=%s",
+                    job["job_id"],
+                    result.get("record_count", 0),
+                    result.get("page_count", 0),
+                )
             except Exception as exc:  # noqa: BLE001 - worker must report every failure
                 LOG.exception("Export %s failed", job["job_id"])
                 previous = self.status.get(job["job_id"], {})
@@ -420,6 +474,7 @@ class ExportWorker:
         binary_file: Any = None
         writer: Any = None
         collection_complete = False
+        cancellation_requested = False
         artifact_base = str(manifest.get("artifact_base") or job_id)
 
         def current_names() -> tuple[str, Path, Path]:
@@ -456,7 +511,13 @@ class ExportWorker:
 
         try:
             while True:
+                if job_id in getattr(self, "cancel_requests", set()):
+                    cancellation_requested = True
+                    raise ExportCancelled()
                 response = elastic.request("POST", "/_search", search)
+                if job_id in getattr(self, "cancel_requests", set()):
+                    cancellation_requested = True
+                    raise ExportCancelled()
                 pit_id = str(response.get("pit_id") or pit_id)
                 if total_records is None:
                     total_records = total_hits(response)
@@ -561,7 +622,7 @@ class ExportWorker:
         finally:
             if text_file is not None:
                 close_open_part()
-            if collection_complete:
+            if collection_complete or cancellation_requested:
                 try:
                     elastic.request("DELETE", "/_pit", {"id": pit_id})
                 except Exception:
@@ -740,6 +801,22 @@ class Handler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK if status else HTTPStatus.NOT_FOUND, status or {"error": "job not found"})
             return
         self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        parsed = urllib.parse.urlsplit(self.path)
+        match = re.fullmatch(r"/jobs/([^/]+)/cancel", parsed.path)
+        if not match:
+            self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+            return
+        if not self._authorized():
+            self._json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+            return
+        job_id = urllib.parse.unquote(match.group(1))
+        status, payload = WORKER.cancel(job_id) if WORKER else (
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            {"error": "worker unavailable"},
+        )
+        self._json(status, payload)
 
     def do_POST(self) -> None:  # noqa: N802
         if self.path != "/exports":

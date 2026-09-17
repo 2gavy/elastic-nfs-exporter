@@ -88,6 +88,25 @@ class ExporterTests(unittest.TestCase):
                 r"\\fileserver\security-exports\alerts.zip",
             )
 
+    def test_cancel_marks_only_requested_job(self):
+        with tempfile.TemporaryDirectory() as directory:
+            worker = ExportWorker.__new__(ExportWorker)
+            worker.export_dir = exporter.Path(directory)
+            worker.cancel_requests = set()
+            worker.status = {
+                "job-running": {"job_id": "job-running", "status": "running"},
+                "job-queued": {"job_id": "job-queued", "status": "queued"},
+            }
+            status, response = worker.cancel("job-running")
+            self.assertEqual(status, exporter.HTTPStatus.ACCEPTED)
+            self.assertEqual(response["status"], "cancelling")
+            self.assertIn("job-running", worker.cancel_requests)
+            self.assertEqual(worker.status["job-queued"]["status"], "queued")
+            stored = exporter.json.loads(
+                (worker.export_dir / "job-running.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(stored["status"], "cancelling")
+
     def test_zip_stream(self):
         with tempfile.NamedTemporaryFile(suffix=".zip") as raw:
             with zipfile.ZipFile(raw, mode="w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as archive:

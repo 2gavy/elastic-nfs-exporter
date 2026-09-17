@@ -27,6 +27,17 @@ This on-prem service accepts one complete Discover Inspector request, paginates 
 
 The service returns HTTP 202 with a job ID. `GET /jobs/<job-id>` returns lightweight status. Completed files are atomically renamed to the generated artifact name ending in `.zip`. By default, each archive contains sequential CSV parts with approximately 200,000 data rows each; a part may exceed the target by at most one Elasticsearch page because checkpoints and part rotation happen only at safe page boundaries. Set `CSV_ROWS_PER_FILE` to change that limit. Staged parts remain hidden while a job is incomplete and are removed after successful ZIP assembly.
 
+Cancel a mistaken submission without stopping the container or other jobs:
+
+```http
+DELETE /jobs/<job-id>/cancel
+Authorization: Bearer <EXPORT_API_TOKEN>
+```
+
+The job stops at the next safe Elasticsearch page checkpoint, its PIT is closed,
+and already committed CSV parts remain available for operator cleanup. A queued
+job can be cancelled with the same command before it starts.
+
 The same exporter process sends the completion callback to Tines. Failed
 callbacks are retried from the completed manifest every
 `CALLBACK_RETRY_SECONDS` until Tines accepts them. A delivery marker prevents
