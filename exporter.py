@@ -58,6 +58,16 @@ def artifact_base_name(export_name: Any, job_id: str) -> str:
     return f"{safe}-{job_id.rsplit('-', 1)[-1]}"
 
 
+def display_path(root: str, filename: str) -> str:
+    """Return the analyst-facing NFS/SMB path without changing the mounted path."""
+    cleaned = str(root or "").strip()
+    if not cleaned:
+        return ""
+    if cleaned.startswith("\\\\"):
+        return cleaned.rstrip("\\") + "\\" + filename
+    return cleaned.rstrip("/") + "/" + filename
+
+
 def parse_discover_request(raw: str) -> tuple[str, dict[str, Any]]:
     text = str(raw or "").strip()
     first_brace = text.find("{")
@@ -238,6 +248,7 @@ class ExportWorker:
         self.export_dir.mkdir(parents=True, exist_ok=True)
         self.callback_url = env("TINES_CALLBACK_URL")
         self.download_base_url = env("DOWNLOAD_BASE_URL").rstrip("/")
+        self.nfs_display_path = env("NFS_DISPLAY_PATH", str(self.export_dir))
         self.jobs: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=int(env("MAX_QUEUED_JOBS", "20")))
         self.status: dict[str, dict[str, Any]] = {}
         self._restore_jobs()
@@ -605,6 +616,10 @@ class ExportWorker:
             "csv_part_count": len(csv_filenames),
             "csv_rows_per_file": int(manifest.get("csv_rows_per_file") or env("CSV_ROWS_PER_FILE", "200000")),
             "file_path": str(final_path),
+            "nfs_path": display_path(
+                getattr(self, "nfs_display_path", str(self.export_dir)),
+                filename,
+            ),
             "compressed_bytes": final_path.stat().st_size,
             "sha256": sha256.hexdigest(),
             "download_url": f"{self.download_base_url}/{urllib.parse.quote(filename)}" if self.download_base_url else "",

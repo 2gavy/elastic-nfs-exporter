@@ -35,4 +35,17 @@ Every completed Elasticsearch page is flushed to a staged CSV part and recorded 
 
 ## NFS and download service
 
-Mount NFS on the host and bind-mount it into the container. Do not expose NFS port 2049 externally. Serve completed files separately through an internal HTTPS endpoint such as Nginx; `DOWNLOAD_BASE_URL` is included in the callback metadata.
+Mount NFS on the Docker host and bind-mount it into the container. Set
+`NFS_DISPLAY_PATH` to the path analysts use to open the same share, for example
+`\\\\fileserver\\security-exports` for a Windows SMB share or
+`/mnt/security-exports` for Linux NFS clients. The completion callback includes
+the full customer-facing path as `nfs_path`, so Tines can place it in the email.
+
+Keep storage access internal. For NFSv4, allow TCP 2049 only between the exporter
+host and the NFS server. If Windows analysts access the same NAS through SMB,
+allow TCP 445 only from the analyst network to the NAS. Do not expose TCP 2049
+or TCP 445 through ngrok or directly to the internet.
+
+`DOWNLOAD_BASE_URL` is optional and is only for a separately managed internal
+HTTPS download service; it is not required when analysts retrieve files from the
+NFS/SMB share.

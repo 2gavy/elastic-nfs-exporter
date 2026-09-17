@@ -11,6 +11,7 @@ from exporter import (
     _TextWriter,
     artifact_base_name,
     cell,
+    display_path,
     flatten,
     parse_discover_request,
     progress_bar,
@@ -42,6 +43,16 @@ class ExporterTests(unittest.TestCase):
             "Security-Alerts-2026-08-01-to-2026-08-18-deadbeef",
         )
         self.assertEqual(artifact_base_name("../", job_id), job_id)
+
+    def test_customer_facing_share_paths(self):
+        self.assertEqual(
+            display_path(r"\\fileserver\security-exports", "alerts.zip"),
+            r"\\fileserver\security-exports\alerts.zip",
+        )
+        self.assertEqual(
+            display_path("/mnt/security-exports", "alerts.zip"),
+            "/mnt/security-exports/alerts.zip",
+        )
 
     def test_zip_stream(self):
         with tempfile.NamedTemporaryFile(suffix=".zip") as raw:
