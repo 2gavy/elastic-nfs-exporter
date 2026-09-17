@@ -249,10 +249,17 @@ class ExportWorker:
         self.callback_url = env("TINES_CALLBACK_URL")
         self.download_base_url = env("DOWNLOAD_BASE_URL").rstrip("/")
         self.nfs_display_path = env("NFS_DISPLAY_PATH", str(self.export_dir))
+        self.callback_lock = threading.Lock()
         self.jobs: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=int(env("MAX_QUEUED_JOBS", "20")))
         self.status: dict[str, dict[str, Any]] = {}
         self._restore_jobs()
         threading.Thread(target=self._run, name="export-worker", daemon=True).start()
+        if self.callback_url:
+            threading.Thread(
+                target=self._retry_callbacks,
+                name="callback-retry",
+                daemon=True,
+            ).start()
 
     def _restore_jobs(self) -> None:
         for manifest_path in sorted(self.export_dir.glob("exp-*.json")):
@@ -649,17 +656,40 @@ class ExportWorker:
     def _callback(self, result: dict[str, Any]) -> None:
         if not self.callback_url:
             return
-        request = urllib.request.Request(
-            self.callback_url,
-            data=json.dumps(result).encode(),
-            method="POST",
-            headers={"Content-Type": "application/json"},
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                response.read()
-        except Exception:
-            LOG.warning("Tines callback failed for %s", result["job_id"], exc_info=True)
+        marker = self.export_dir / f".{result['job_id']}.callback-sent"
+        with self.callback_lock:
+            if marker.exists():
+                return
+            payload = dict(result)
+            filename = str(payload.get("filename") or "")
+            if filename:
+                payload["nfs_path"] = display_path(self.nfs_display_path, filename)
+            request = urllib.request.Request(
+                self.callback_url,
+                data=json.dumps(payload).encode(),
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    response.read()
+                marker.write_text(utc_now(), encoding="utf-8")
+                LOG.info("Delivered completion callback for %s", result["job_id"])
+            except Exception:
+                LOG.warning("Tines callback failed for %s; it will be retried", result["job_id"], exc_info=True)
+
+    def _retry_callbacks(self) -> None:
+        interval = max(2.0, float(env("CALLBACK_RETRY_SECONDS", "10")))
+        while True:
+            time.sleep(interval)
+            for manifest_path in sorted(self.export_dir.glob("exp-*.json")):
+                try:
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if manifest.get("status") not in {"complete", "failed"}:
+                    continue
+                self._callback(manifest)
 
 
 class _TextWriter:

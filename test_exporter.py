@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 import zipfile
+from unittest.mock import patch
 
 import exporter
 from exporter import (
@@ -53,6 +54,39 @@ class ExporterTests(unittest.TestCase):
             display_path("/mnt/security-exports", "alerts.zip"),
             "/mnt/security-exports/alerts.zip",
         )
+
+    def test_callback_is_marked_and_not_sent_twice(self):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def read(self):
+                return b"accepted"
+
+        with tempfile.TemporaryDirectory() as directory:
+            worker = ExportWorker.__new__(ExportWorker)
+            worker.export_dir = exporter.Path(directory)
+            worker.callback_url = "https://tenant.tines.com/webhook/path/secret"
+            worker.nfs_display_path = r"\\fileserver\security-exports"
+            worker.callback_lock = exporter.threading.Lock()
+            result = {
+                "job_id": "exp-callback",
+                "status": "complete",
+                "filename": "alerts.zip",
+            }
+            with patch("exporter.urllib.request.urlopen", return_value=Response()) as send:
+                worker._callback(result)
+                worker._callback(result)
+            self.assertEqual(send.call_count, 1)
+            self.assertTrue((worker.export_dir / ".exp-callback.callback-sent").is_file())
+            payload = exporter.json.loads(send.call_args.args[0].data)
+            self.assertEqual(
+                payload["nfs_path"],
+                r"\\fileserver\security-exports\alerts.zip",
+            )
 
     def test_zip_stream(self):
         with tempfile.NamedTemporaryFile(suffix=".zip") as raw:

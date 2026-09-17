@@ -27,6 +27,12 @@ This on-prem service accepts one complete Discover Inspector request, paginates 
 
 The service returns HTTP 202 with a job ID. `GET /jobs/<job-id>` returns lightweight status. Completed files are atomically renamed to the generated artifact name ending in `.zip`. By default, each archive contains sequential CSV parts with approximately 200,000 data rows each; a part may exceed the target by at most one Elasticsearch page because checkpoints and part rotation happen only at safe page boundaries. Set `CSV_ROWS_PER_FILE` to change that limit. Staged parts remain hidden while a job is incomplete and are removed after successful ZIP assembly.
 
+The same exporter process sends the completion callback to Tines. Failed
+callbacks are retried from the completed manifest every
+`CALLBACK_RETRY_SECONDS` until Tines accepts them. A delivery marker prevents
+duplicate completion emails after container restarts; no callback sidecar is
+required.
+
 `export_name` is optional. When supplied, it is sanitized and combined with the job's random suffix to produce a readable, collision-safe ZIP name. Every CSV part begins with a UTF-8 byte-order mark for reliable Unicode handling in Windows Excel.
 
 ## Restart recovery
